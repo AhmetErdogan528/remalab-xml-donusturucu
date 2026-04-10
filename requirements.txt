@@ -1,9 +1,6 @@
-streamlit==1.56.0
-pandas==3.0.0
-numpy==2.2.0
-lxml==6.0.2
-rdkit
-deepchem
-MDAnalysis
+streamlit
+pandas
+numpy
+lxml
 openpyxl
 requests
