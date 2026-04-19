@@ -224,6 +224,38 @@ def remalab_stili_excel_olustur(yapı, template_path):
     wb.save(buffer)
     return buffer.getvalue()
 
+def validate_excel_data(xls, yapı):
+    errors = []
+    
+    # XSD'deki her bir sayfayı (Genel, Ürün, Hammadde) tek tek kontrol et
+    for sheet_key, columns in yapı.items():
+        # Excel'de bu sayfa var mı?
+        sheet_name = next((s for s in xls.sheet_names if normalize_text(s) == normalize_text(sheet_key)), None)
+        
+        if not sheet_name:
+            errors.append(f"❌ **{sheet_key}** sayfası Excel dosyasında tamamen eksik!")
+            continue
+
+        df = xls.parse(sheet_name)
+        
+        # Sadece XSD'de "Zorunlu: True" olanları filtrele
+        zorunlu_sutunlar = [c["Ad"] for c in columns if c["Zorunlu"]]
+
+        # EĞER SAYFA TAMAMEN BOŞSA (Sadece başlık varsa veya o bile yoksa)
+        if df.empty:
+            for alan in zorunlu_sutunlar:
+                errors.append(f"📍 **{sheet_name}** sayfası bomboş! `{alan}` alanı doldurulmak zorundadır.")
+            continue
+
+        # SAYFA DOLUYSA SATIR SATIR KONTROL ET
+        for index, row in df.iterrows():
+            for alan in zorunlu_sutunlar:
+                # 1. Sütun Excel'de var mı? 2. İçi boş mu?
+                val = row.get(alan)
+                if alan not in df.columns or pd.isna(val) or str(val).strip() == "":
+                    errors.append(f"📍 **{sheet_name}** | Satır {index + 2} | `{alan}` sütunu boş veya eksik!")
+                    
+    return errors
 # --- 3. EXCEL → XML DÖNÜŞTÜRÜCÜ ---
 def excel_to_xml(excel_file):
     xls = pd.ExcelFile(excel_file)
@@ -323,17 +355,21 @@ if secim == "1. XSD'den Şablon Güncelle":
 
     if uploaded_xsd:
         try:
-            with st.spinner("Şablon senkronize ediliyor ve veriler temizleniyor..."):
+            with st.spinner("Şablon senkronize ediliyor..."):
                 yapı = xsd_derin_analiz(uploaded_xsd)
+                # BURASI KRİTİK: Analiz edilen yapıyı hafızaya kaydediyoruz
+                st.session_state.yapı = yapı 
+                
                 excel_data = remalab_stili_excel_olustur(yapı, "REMALAB.xlsx")
 
-            st.success("✅ Şablon Güncellendi ve Eski Veriler Temizlendi!")
+            st.success("✅ Şablon Güncellendi ve Hafızaya Alındı!")
+            
 
             # XSD'den bulunan alan sayılarını göster
             col1, col2, col3 = st.columns(3)
-            col1.metric("📋 Genel Bilgiler", len(yapı["GENEL BİLGİLER"]))
-            col2.metric("📦 Ürün Listesi", len(yapı["URUN_LISTESI"]))
-            col3.metric("🧪 Hammadde Listesi", len(yapı["HAMMADDE_LISTESI"]))
+            col1.metric("📋 Genel Bilgiler", len(yapı["Genel_Bilgiler"]))
+            col2.metric("📦 Ürün Listesi", len(yapı["Urunler"]))
+            col3.metric("🧪 Hammadde Listesi", len(yapı["Hammaddeler"]))
 
             st.download_button(
                 label="📥 REMALAB_Guncel.xlsx İndir",
@@ -350,30 +386,52 @@ if secim == "1. XSD'den Şablon Güncelle":
 elif secim == "2. Excel'den XML'e Dönüştür":
     st.title("🚀 Veri Dönüştürme Merkezi")
     st.info("Doldurduğunuz Excel dosyasını buraya yükleyerek XML çıktısı alabilirsiniz.")
-
+    
+    # Kullanıcıdan XSD istemiyoruz, doğrudan Excel'i bekliyoruz
     uploaded_excel = st.file_uploader("Excel Dosyasını Yükleyin", type=["xlsx"])
 
     if uploaded_excel:
+        # Hafızada analiz edilmiş XSD yapısı var mı kontrol ediyoruz
+        if "yapı" not in st.session_state or st.session_state.yapı is None:
+            st.error("❌ Önce 1. adımdan XSD yükleyerek şablonu güncellemelisiniz!")
+            st.info("Sistem, hangi alanların zorunlu olduğunu anlamak için XSD analizine ihtiyaç duyar.")
+            st.stop()
+        
         try:
-            with st.spinner("XML Hazırlanıyor..."):
-                xml_result = excel_to_xml(uploaded_excel)
+            # Hafızadaki yapı bilgisini çekiyoruz
+            yapı = st.session_state.yapı
+            xls = pd.ExcelFile(uploaded_excel)
+            
+            # 1. GERÇEK DENETLEME (Hafızadaki yapıya göre nokta atışı kontrol)
+            hatalar = validate_excel_data(xls, yapı)
+            
+            if hatalar:
+                st.error(f"❌ DENETLEME BAŞARISIZ: {len(hatalar)} adet zorunlu alan hatası bulundu!")
+                for h in hatalar:
+                    st.warning(h)
+                st.info("⚠️ Bu hataları düzeltmeden XML dosyası oluşturulamaz.")
+                st.stop() # Hatalar düzelmeden alt satırlara geçilmez
+            
+            # 2. DENETLEME GEÇİLDİYSE XML ÜRETİMİ
+            with st.spinner("Denetleme başarılı, XML hazırlanıyor..."):
+                # Orijinal fonksiyonun tüm verileri okuyup XML'e basar
+                xml_result = excel_to_xml(uploaded_excel) 
+                
+                st.success("✅ Denetleme Geçildi. Tüm veriler XML'e dönüştürüldü.")
+                
+                # XML önizleme
+                with st.expander("🔍 XML Önizleme (İlk 100 Satır)"):
+                    xml_str = xml_result.decode("utf-8")
+                    preview_lines = "\n".join(xml_str.splitlines()[:100])
+                    st.code(preview_lines, language="xml")
 
-            st.success("✅ XML Başarıyla Üretildi!")
+                st.download_button(
+                    label="📥 XML'i İndir", 
+                    data=xml_result, 
+                    file_name="UBF_Veri.xml",
+                    mime="application/xml"
+                )
 
-            # XML önizleme
-            with st.expander("🔍 XML Önizleme (ilk 50 satır)"):
-                xml_str = xml_result.decode("utf-8")
-                preview_lines = "\n".join(xml_str.splitlines()[:50])
-                st.code(preview_lines, language="xml")
-
-            st.download_button(
-                label="📥 XML'i İndir",
-                data=xml_result,
-                file_name="UBF_Veri.xml",
-                mime="application/xml"
-            )
-        except ValueError as e:
-            st.error(f"❌ Veri Hatası: {e}")
         except Exception as e:
-            st.error(f"❌ Beklenmeyen Hata: {e}")
+            st.error(f"❌ Beklenmeyen sistem hatası: {e}")
             st.exception(e)
